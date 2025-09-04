@@ -1,0 +1,46 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+pts/
+
+# Logs
+logs/
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Local Python tooling
+.mypy_cache/
+.pytest_cache/
+*.coverage
+coverage.xml
+htmlcov/
+
+# Build artifacts (Zephyr / CMake extra)
+build*/
+**/compile_commands.json
+
+# OS noise
+Thumbs.db
+.DS_Store
+
+# Uvicorn / run caches
+*.pid
+
+# Temporary
+tmp/
+temp/
+
+# Additional Python packaging ignores
+*.egg-info/
+dist/
+build/

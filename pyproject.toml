@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nus-logger"
+version = "0.0.1"
+description = "Auto-reconnecting Nordic UART Service (NUS) BLE logger."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "Simon M"}]
+keywords = ["BLE", "Nordic", "NUS", "logging"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Debuggers",
+  "Topic :: System :: Logging",
+  "Framework :: AsyncIO",
+  "Environment :: Console",
+  "Typing :: Typed"
+]
+dependencies = [
+  "bleak==0.22.2"
+]
+
+[project.optional-dependencies]
+color = ["colorama>=0.4.6"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "colorama>=0.4.6"]
+all = ["colorama>=0.4.6"]
+
+[project.urls]
+Homepage = "https://github.com/smnmsr/nus-logger"
+Issues = "https://github.com/smnmsr/nus-logger/issues"
+Source = "https://github.com/smnmsr/nus-logger"
+
+[tool.hatch.build]
+exclude = ["tests", "scripts"]
+# Ensure PEP 561 typing marker is included
+include = ["src/nus_logger/py.typed"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nus_logger"]
+
+[project.scripts]
+nus-logger = "nus_logger.nus_logger:main"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
