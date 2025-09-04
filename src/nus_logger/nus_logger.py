@@ -19,7 +19,7 @@ from typing import Optional, TextIO
 from bleak.exc import BleakError
 
 from .utils import utc_ts, local_ts, exponential_backoff, open_log_file, supports_color, LineAssembler
-from .ble_nus import NUSClient, NUS_SERVICE_UUID, NUS_RX_CHAR_UUID, NUS_TX_CHAR_UUID
+from .ble_nus import NUSClient, NUS_SERVICE_UUID, NUS_RX_CHAR_UUID, NUS_TX_CHAR_UUID, DiscoveredDevice
 
 
 # Try colorama if available (never mandatory)
@@ -51,6 +51,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description="Read Nordic UART Service logs over BLE.")
     p.add_argument("--name", required=False,
                    help="Exact or substring match for device name (or set NUS_NAME)")
+    p.add_argument("--wizard", action="store_true",
+                   help="Interactive wizard to select device & common options (default when no args)")
     timeout_def = env_default("NUS_TIMEOUT", "5.0") or "5.0"
     p.add_argument("--timeout", type=float, default=float(timeout_def),
                    help="Scan timeout seconds (default 5.0)")
@@ -80,13 +82,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Preferred address substring when multiple matches")
     args = p.parse_args(argv)
 
-    # Environment override for required name if not given
-    if not args.name:
+    # If user supplied no arguments at all, treat as --wizard
+    if not argv:
+        args.wizard = True
+
+    # Environment override for required name if not given (skip in wizard)
+    if not args.wizard and not args.name:
         env_name = env_default("NUS_NAME")
         if env_name:
             args.name = env_name
-    if not args.name and not args.list:
-        p.error("--name required unless --list is used (or set NUS_NAME)")
+    if not args.wizard and not args.name and not args.list:
+        p.error("--name required unless --list or --wizard is used (or set NUS_NAME)")
 
     if args.ts and args.ts_local:
         p.error("--ts and --ts-local are mutually exclusive")
@@ -136,6 +142,14 @@ async def run_logger(args: argparse.Namespace) -> int:
 
     if args.list:
         return await list_devices(args.timeout, args.adapter)
+
+    if getattr(args, "wizard", False):
+        # Defer to wizard to produce a new args namespace with selected options
+        new_args = await wizard_flow(args)
+        # If wizard aborted (returns None), exit gracefully
+        if new_args is None:
+            return 0
+        args = new_args
 
     logfile_handle: Optional[TextIO] = open_log_file(
         args.logfile) if args.logfile else None  # type: ignore[assignment]
@@ -285,6 +299,86 @@ async def run_logger(args: argparse.Namespace) -> int:
             pass
     return 0
 
+
+async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namespace]:
+    """Interactive wizard to choose device & common display/logging options.
+
+    Returns a populated argparse.Namespace compatible with run_logger, or None
+    if user aborts.
+    """
+    if not sys.stdin.isatty():  # Non-interactive environment
+        print("Wizard requested but stdin is not a TTY; aborting.", file=sys.stderr)
+        return None
+    print(format_event("NUS Logger Wizard", "ok"))
+    print("Scanning for advertising devices (Ctrl-C to quit)...")
+    client = NUSClient()
+
+    selected: Optional[DiscoveredDevice] = None
+    while selected is None:
+        try:
+            devices = await client.scan(name="", timeout=base_args.timeout, adapter=base_args.adapter)
+        except BleakError as e:
+            print(format_event(f"Scan failed: {e}", "err"), file=sys.stderr)
+            choice = input("Retry scan? [Y/n]: ").strip().lower()
+            if choice == "n":
+                return None
+            continue
+        if not devices:
+            print("No named devices found.")
+            choice = input("(R)escan or (Q)uit? [R/q]: ").strip().lower()
+            if choice == "q":
+                return None
+            else:
+                continue
+        # Display table
+        print("\nDiscovered devices:")
+        for idx, d in enumerate(devices):
+            print(f"  [{idx}] {d.name} | {d.address} | RSSI {d.rssi} dBm")
+        resp = input(
+            "Select device index, or 'r' to rescan, 'q' to quit: ").strip().lower()
+        if resp == 'q':
+            return None
+        if resp == 'r' or resp == '':
+            continue
+        try:
+            choice_i = int(resp)
+            if 0 <= choice_i < len(devices):
+                selected = devices[choice_i]
+            else:
+                print("Invalid index.")
+        except ValueError:
+            print("Enter a numeric index, 'r', or 'q'.")
+
+    # Timestamp selection
+    ts_mode = None
+    while ts_mode is None:
+        ans = input("Timestamp? (n)one, (u)tc, (l)ocal [n]: ").strip().lower()
+        if ans == '' or ans == 'n':
+            ts_mode = 'none'
+        elif ans == 'u':
+            ts_mode = 'utc'
+        elif ans == 'l':
+            ts_mode = 'local'
+        else:
+            print("Please enter n, u, or l.")
+
+    raw_hex = input("Show raw hex column? (y/N): ").strip().lower() == 'y'
+    logfile = input("Logfile path (leave blank for none): ").strip() or None
+
+    # Build new args namespace: start with base to preserve timeouts/backoff
+    new_args = argparse.Namespace(**vars(base_args))
+    new_args.wizard = False  # consumed
+    new_args.name = selected.name
+    # Use full address to disambiguate if duplicates exist
+    new_args.filter_addr = selected.address
+    new_args.ts = ts_mode == 'utc'
+    new_args.ts_local = ts_mode == 'local'
+    new_args.raw = raw_hex
+    new_args.logfile = logfile
+    # Force reconnect true by default
+    new_args.reconnect = True
+    print(format_event(f"Selected {selected.name} ({selected.address})", "ok"))
+    return new_args
 
 
 def main() -> None:
