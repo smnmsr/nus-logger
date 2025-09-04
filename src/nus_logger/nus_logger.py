@@ -4,7 +4,7 @@ Features:
 * Scans by (substring) name, selects strongest RSSI.
 * Reassembles newline-delimited log lines (flush on idle).
 * Optional timestamps, raw hex, file logging, auto-reconnect with backoff.
-* Minimal dependencies: bleak (+ optional colorama for colored events).
+* Minimal dependencies: bleak (+ colorama auto-installed on Windows for colored events, optional elsewhere).
 """
 from __future__ import annotations
 

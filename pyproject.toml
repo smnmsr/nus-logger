@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nus-logger"
-version = "0.0.1"
+version = "0.0.2"
 description = "Auto-reconnecting Nordic UART Service (NUS) BLE logger."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,13 +28,12 @@ classifiers = [
   "Typing :: Typed"
 ]
 dependencies = [
-  "bleak==0.22.2"
+  "bleak==0.22.2",
+  "colorama>=0.4.6; platform_system == 'Windows'"  # auto color support on Windows
 ]
 
 [project.optional-dependencies]
-color = ["colorama>=0.4.6"]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "colorama>=0.4.6"]
-all = ["colorama>=0.4.6"]
 
 [project.urls]
 Homepage = "https://github.com/smnmsr/nus-logger"
@@ -43,8 +42,6 @@ Source = "https://github.com/smnmsr/nus-logger"
 
 [tool.hatch.build]
 exclude = ["tests", "scripts"]
-# Ensure PEP 561 typing marker is included
-include = ["src/nus_logger/py.typed"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nus_logger"]

@@ -19,8 +19,7 @@ Auto‑reconnecting Nordic UART Service (NUS) BLE log collector for Zephyr / nRF
 ## Installation
 
 ```bash
-pip install nus-logger            # core
-pip install "nus-logger[color]"   # with colored status output
+pip install nus-logger
 ```
 
 Requires Python 3.9+.

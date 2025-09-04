@@ -1,10 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+    # Allows other workflows (e.g., publish) to invoke this CI run
+    inputs: {}
+    secrets: {}
 
 jobs:
   test:
@@ -22,4 +24,26 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[dev]
       - name: Run tests
+        run: pytest -q
+
+  cross-platform:
+    # Lightweight smoke test across OSes to catch platform issues
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+      - name: Install (dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[dev]
+      - name: Sanity import
+        run: python -c "import nus_logger, sys; print('nus_logger', nus_logger.__version__); print(sys.platform)"
+      - name: Smoke tests
         run: pytest -q
