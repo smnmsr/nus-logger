@@ -11,7 +11,7 @@
 <img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/nus-logger.svg">
 <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
 <img alt="BLE" src="https://img.shields.io/badge/BLE-Nordic%20NUS-1976d2">
-<img alt="Status" src="https://img.shields.io/badge/status-early%20alpha-orange">
+<img alt="Status" src="https://img.shields.io/badge/status-beta-blue">
 </p>
 
 </div>

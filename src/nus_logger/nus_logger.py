@@ -290,8 +290,11 @@ async def run_logger(args: argparse.Namespace) -> int:
     idle_task.cancel()
     try:
         await idle_task
-    except Exception:  # pragma: no cover - cancelled
+    except asyncio.CancelledError:  # Expected during shutdown; suppress noisy traceback
         pass
+    except Exception as exc:  # pragma: no cover - unexpected idle flush error during shutdown
+        print(format_event(
+            f"Idle task termination error (ignored): {exc}", "err"), file=sys.stderr)
     if logfile_handle and hasattr(logfile_handle, "close"):
         try:
             logfile_handle.close()  # type: ignore[attr-defined]

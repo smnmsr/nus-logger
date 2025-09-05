@@ -219,13 +219,32 @@ class NUSClient:
 
     # ------------------------------------------------------------------
     async def disconnect(self) -> None:
-        if self._client and self._client.is_connected:
+        """Gracefully stop notifications and disconnect if connected.
+
+        Extra defensive checks are used because on some platforms (notably
+        Windows) a rapid Ctrl-C can race with bleak's internal teardown so
+        that characteristics/services become None just as we attempt to
+        stop notifications, leading to AttributeError inside bleak. We
+        swallow those benign errors to achieve a quiet, graceful shutdown.
+        """
+        client = self._client
+        if client and client.is_connected:
             try:
                 if self._tx_char:
-                    await self._client.stop_notify(self._tx_char)
+                    try:
+                        await client.stop_notify(self._tx_char)
+                    except (AttributeError, BleakError):
+                        # Services/characteristics already gone or backend complained; safe to ignore.
+                        pass
+                    except Exception:
+                        # Any other backend oddities during teardown should not surface to user.
+                        pass
             finally:
                 try:
-                    await self._client.disconnect()
+                    try:
+                        await client.disconnect()
+                    except BleakError:
+                        pass
                 finally:
                     self._connected_event.clear()
 

@@ -44,3 +44,4 @@ temp/
 *.egg-info/
 dist/
 build/
+nus-logger.code-workspace
