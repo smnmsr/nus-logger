@@ -203,17 +203,70 @@ async def run_logger(args: argparse.Namespace) -> int:
             ts_prefix = utc_ts() + " "
         elif args.ts_local:
             ts_prefix = local_ts() + " "
-        out_line = text
+
+        # Determine console width
+        try:
+            term_width = os.get_terminal_size().columns
+        except Exception:
+            term_width = 80  # Fallback default
+
+        # Calculate prefix width
+        prefix_len = len(ts_prefix)
+
+        # If raw hex is enabled, format as two columns with wrapping
         if args.raw:
-            hexpart = raw.hex()
-            out_line = f"{text}  | {hexpart}"
-        line = ts_prefix + out_line
-        print(line)
-        if logfile_handle:
-            try:
-                logfile_handle.write(line + "\n")
-            except Exception:  # pragma: no cover - disk error path
-                pass
+            hex_bytes = raw.hex()
+            hex_pairs = [hex_bytes[i:i+2] for i in range(0, len(hex_bytes), 2)]
+            sep = " | "
+            sep_len = len(sep)
+            available = term_width - prefix_len - sep_len
+            if available < 20:
+                # Too narrow, fallback to old behavior
+                out_line = f"{text}{sep}{hex_bytes}"
+                line = ts_prefix + out_line
+                print(line)
+                if logfile_handle:
+                    try:
+                        logfile_handle.write(line + "\n")
+                    except Exception:
+                        pass
+                return
+            # Split available space between text and hex
+            text_col = available // 2
+            hex_col = available - text_col
+            # Prepare chunks
+            text_chunks = [text[i:i+text_col]
+                           for i in range(0, len(text), text_col)]
+            # Each hex byte is 2 chars + 1 space, so hex_col//3 bytes per line
+            hex_bytes_per_line = max(1, hex_col // 3)
+            hex_chunks = [hex_pairs[i:i+hex_bytes_per_line]
+                          for i in range(0, len(hex_pairs), hex_bytes_per_line)]
+            # Pad shorter list
+            max_lines = max(len(text_chunks), len(hex_chunks))
+            text_chunks += [""] * (max_lines - len(text_chunks))
+            hex_chunks += [[]] * (max_lines - len(hex_chunks))
+            # Print lines
+            for idx in range(max_lines):
+                prefix = ts_prefix if idx == 0 else " " * prefix_len
+                text_display = text_chunks[idx].ljust(text_col)
+                hex_display = " ".join(hex_chunks[idx]).ljust(hex_col)
+                out_line = f"{text_display}{sep}{hex_display}"
+                line = prefix + out_line
+                print(line)
+                if logfile_handle:
+                    try:
+                        logfile_handle.write(line + "\n")
+                    except Exception:
+                        pass
+        else:
+            out_line = text
+            line = ts_prefix + out_line
+            print(line)
+            if logfile_handle:
+                try:
+                    logfile_handle.write(line + "\n")
+                except Exception:
+                    pass
 
     client = NUSClient()
     outer_client = client
