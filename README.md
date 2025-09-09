@@ -21,7 +21,7 @@
 ## ✨ Highlights
 
 - **Zero‑config CLI**: discover, connect, stream logs in one command.
-- **Simple**: single connection session; exits cleanly on disconnect.
+- **Resilient**: automatic reconnect to the same device after link loss (disable with `--no-reconnect`).
 - **Readable timestamps**: UTC (`--ts`) or local (`--ts-local`).
 - **Dual view**: optional raw hex alongside decoded UTF‑8 text (`--raw`).
 - **Log persistence**: safe append mode (rotation‑friendly) to any file.
@@ -65,69 +65,27 @@ Module mode (equivalent):
 python -m nus_logger --name my-device --ts
 ```
 
-Press Ctrl-C to stop; the tool exits on disconnect.
+Press Ctrl-C to stop. By default the tool will auto‑reconnect after an unexpected disconnect; use `--no-reconnect` to revert to single‑session behaviour.
 
 ## CLI Reference
 
 Environment variables override flags when corresponding flags are omitted.
 
-| Flag                   | Description                         | Env           | Notes                            |
-| ---------------------- | ----------------------------------- | ------------- | -------------------------------- | --- | --- | --- |
-| `--wizard`             | Interactive scan & option wizard    | –             | Default when no args             |
-| `--list`               | List visible devices then exit      | –             | Passive scan only                |
-| `--name SUBSTR`        | Match advertising name              | `NUS_NAME`    | Case-insensitive substring       |
-| `--filter-addr SUBSTR` | Prefer address containing substring | –             | Helps disambiguate similar names |
-| `--ts` / `--ts-local`  | Add UTC or local timestamps         | –             | Mutually exclusive               |
-| `--raw`                | Show hex bytes before decoded line  | –             | Two aligned columns              |
-| `--logfile PATH`       | Append decoded lines to file        | `NUS_LOGFILE` | File is created if missing       |
-| `--timeout SECS`       | Scan / connect timeout              | `NUS_TIMEOUT` | Applies to each attempt          | –   | –   | –   |
-| `--verbose`            | Dump discovered GATT structure once | –             | For debugging / inspection       |
-
-<details><summary><strong>Show full help example</strong></summary>
-
-```text
-nus-logger --help
-```
+| Flag                          | Description                                                          |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `-h, --help`                  | Show CLI help                                                        |
+| `--wizard`                    | Interactive scan & option wizard (default when no args)              |
+| `--list`                      | List visible devices then exit                                       |
+| `--name SUBSTR`               | Match advertising name                                               |
+| `--filter-addr SUBSTR`        | Prefer address containing substring                                  |
+| `--ts` / `--ts-local`         | Add UTC or local timestamps (mutually exclusive)                     |
+| `--raw`                       | Show hex bytes                                                       |
+| `--logfile PATH`              | Append decoded lines to file (relative or absolute path)             |
+| `--timeout SECS`              | Scan / connect timeout                                               |
+| `--verbose`                   | Dump discovered GATT structure once                                  |
+| `--reconnect, --no-reconnect` | Automatically rescan & reconnect after disconnect (default: enabled) |
 
 </details>
-
-## Programmatic Use
-
-```python
-import asyncio
-from nus_logger.ble_nus import NUSClient
-
-async def main():
-	client = NUSClient(name_substring="my-device")
-	await client.connect()
-	try:
-		async for line in client.iter_lines():  # yields decoded UTF-8 log lines
-			print(line)
-			if "READY" in line:
-				await client.write(b"ping\n")  # optional upstream write
-	finally:
-		await client.disconnect()
-
-asyncio.run(main())
-```
-
-See `nus_logger.nus_logger:main` for full CLI orchestration (reconnect logic, backoff, etc.). Higher level automation can use `NUSLoggerController` for managed sessions.
-
-### Minimal Flow (Conceptual)
-
-```text
-┌─────────────┐    BLE (NUS)    ┌──────────────┐            ┌─────────────┐
-│ Zephyr App  │ ───────────────▶│   Adapter    │────────────▶│  bleak API  │
-└─────────────┘                 └──────────────┘            └─────────────┘
-	LOG_INF() lines                │                         │
-				       ▼                         ▼
-			       NUSClient (async)  ──▶  line iterator
-				       │
-				       ▼
-			      NUSLoggerController
-				       │
-			stdout / hex column / logfile
-```
 
 ## Typical Workflow (Zephyr / nRF Connect)
 
