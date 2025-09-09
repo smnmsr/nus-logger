@@ -3,7 +3,7 @@
 Features:
 * Scans by (substring) name, selects strongest RSSI.
 * Reassembles newline-delimited log lines (flush on idle).
-* Optional timestamps, raw hex, file logging, auto-reconnect with backoff.
+* Optional timestamps, raw hex, file logging.
 * Minimal dependencies: bleak (+ colorama auto-installed on Windows for colored events, optional elsewhere).
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Optional, TextIO
 
 from bleak.exc import BleakError
 
-from .utils import utc_ts, local_ts, exponential_backoff, open_log_file, supports_color, LineAssembler
+from .utils import utc_ts, local_ts, open_log_file, supports_color, LineAssembler
 from .ble_nus import NUSClient, NUS_SERVICE_UUID, NUS_RX_CHAR_UUID, NUS_TX_CHAR_UUID, DiscoveredDevice
 
 
@@ -65,15 +65,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Prefix lines with UTC timestamp")
     p.add_argument("--ts-local", action="store_true",
                    help="Prefix lines with local timestamp")
-    p.add_argument("--reconnect", action="store_true", default=True,
-                   help="Auto reconnect on disconnect (default true)")
-    max_retries_def = env_default(
-        "NUS_MAX_RETRIES", "1000000000") or "1000000000"
-    backoff_def = env_default("NUS_BACKOFF", "0.5") or "0.5"
-    p.add_argument("--max-retries", type=int, default=int(float(max_retries_def)),
-                   help="Max reconnect attempts (default large ~1e9)")
-    p.add_argument("--backoff", type=float, default=float(backoff_def),
-                   help="Initial reconnect backoff seconds (default 0.5)")
     p.add_argument("--verbose", action="store_true",
                    help="Verbose diagnostics")
     p.add_argument("--list", action="store_true",
@@ -277,70 +268,44 @@ async def run_logger(args: argparse.Namespace) -> int:
 
     client.on_bytes(_on_bytes)
 
-    stable_connected_since: Optional[float] = None
-    backoff_iter = exponential_backoff(initial=args.backoff, cap=15.0)
-    retries = 0
-
     idle_task = asyncio.create_task(_flush_idle())
 
-    while not stop_event.is_set():
-        try:
-            device = await client.scan_and_connect(
-                name=args.name,
-                timeout=args.timeout,
-                adapter=args.adapter,
-                preferred_addr_substring=args.filter_addr,
+    # Single connection attempt then exit on disconnect
+    try:
+        device = await client.scan_and_connect(
+            name=args.name,
+            timeout=args.timeout,
+            adapter=args.adapter,
+            preferred_addr_substring=args.filter_addr,
+        )
+        print(
+            format_event(
+                f"Connected to {device.name} ({device.address}) RSSI={device.rssi}dBm", "ok"
             )
-            stable_connected_since = loop.time()
-            retries = 0
+        )
+        if args.verbose:
+            svcs = await client.get_services_debug()
+            print("Services:\n" + svcs)
+        await client.run_until_disconnect(stop_event)
+        print(format_event("Disconnected", "warn"))
+    except BleakError as e:
+        print(format_event(f"BLE error: {e}", "err"), file=sys.stderr)
+        msg = str(e).lower()
+        if "failed to execute management command" in msg or "not available" in msg:
             print(
-                format_event(
-                    f"Connected to {device.name} ({device.address}) RSSI={device.rssi}dBm", "ok"
-                )
+                "Hint: Ensure Bluetooth adapter is powered and not blocked (rfkill).", file=sys.stderr)
+        if "permission" in msg and sys.platform.startswith("linux"):
+            print(
+                "Hint: Missing permissions. Consider adding user to 'bluetooth' group or setcap 'cap_net_raw+eip' on python.",
+                file=sys.stderr,
             )
-            if args.verbose:
-                svcs = await client.get_services_debug()
-                print("Services:\n" + svcs)
-            await client.run_until_disconnect(stop_event)
-            print(format_event("Disconnected", "warn"))
-        except BleakError as e:
-            print(format_event(f"BLE error: {e}", "err"), file=sys.stderr)
-            # Provide hints for common cases
-            msg = str(e).lower()
-            if "failed to execute management command" in msg or "not available" in msg:
-                print(
-                    "Hint: Ensure Bluetooth adapter is powered and not blocked (rfkill).", file=sys.stderr)
-            if "permission" in msg and sys.platform.startswith("linux"):
-                print(
-                    "Hint: Missing permissions. Consider adding user to 'bluetooth' group or setcap 'cap_net_raw+eip' on python.",
-                    file=sys.stderr,
-                )
-        except Exception as e:  # pragma: no cover - unexpected path
-            print(format_event(
-                f"Unexpected error: {e}", "err"), file=sys.stderr)
-        finally:
-            await client.disconnect()
-            if stop_event.is_set() or not args.reconnect:
-                break
-            # Backoff decisions
-            if stable_connected_since and (loop.time() - stable_connected_since) > 60:
-                # Reset backoff after stable period
-                backoff_iter = exponential_backoff(
-                    initial=args.backoff, cap=15.0)
-            retries += 1
-            if retries > args.max_retries:
-                print(format_event("Max retries reached, exiting.", "err"))
-                break
-            delay = await backoff_iter.__anext__()
-            print(format_event(f"Reconnecting in {delay:.2f}s...", "warn"))
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                break  # stop requested
-            except asyncio.TimeoutError:
-                continue
-
-    stop_event.set()
-    idle_task.cancel()
+    except Exception as e:  # pragma: no cover - unexpected path
+        print(format_event(
+            f"Unexpected error: {e}", "err"), file=sys.stderr)
+    finally:
+        await client.disconnect()
+        stop_event.set()
+        idle_task.cancel()
     try:
         await idle_task
     except asyncio.CancelledError:  # Expected during shutdown; suppress noisy traceback
@@ -431,8 +396,6 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
     new_args.ts_local = ts_mode == 'local'
     new_args.raw = raw_hex
     new_args.logfile = logfile
-    # Force reconnect true by default
-    new_args.reconnect = True
     print(format_event(f"Selected {selected.name} ({selected.address})", "ok"))
     return new_args
 

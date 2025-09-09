@@ -2,7 +2,7 @@
 
 <h1>NUS Logger</h1>
 
-<p><strong>Auto‑reconnecting Nordic UART Service (NUS) BLE log collector for Zephyr / nRF Connect SDK devices.</strong></p>
+<p><strong>Nordic UART Service (NUS) BLE log collector for Zephyr / nRF Connect SDK devices.</strong></p>
 
 <!-- Badges -->
 <p>
@@ -21,7 +21,7 @@
 ## ✨ Highlights
 
 - **Zero‑config CLI**: discover, connect, stream logs in one command.
-- **Resilient**: automatic reconnect with exponential backoff (capped) & graceful exit.
+- **Simple**: single connection session; exits cleanly on disconnect.
 - **Readable timestamps**: UTC (`--ts`) or local (`--ts-local`).
 - **Dual view**: optional raw hex alongside decoded UTF‑8 text (`--raw`).
 - **Log persistence**: safe append mode (rotation‑friendly) to any file.
@@ -65,25 +65,23 @@ Module mode (equivalent):
 python -m nus_logger --name my-device --ts
 ```
 
-Press Ctrl-C to stop; the tool will attempt automatic reconnection until max retries.
+Press Ctrl-C to stop; the tool exits on disconnect.
 
 ## CLI Reference
 
 Environment variables override flags when corresponding flags are omitted.
 
-| Flag                   | Description                         | Env               | Notes                            |
-| ---------------------- | ----------------------------------- | ----------------- | -------------------------------- |
-| `--wizard`             | Interactive scan & option wizard    | –                 | Default when no args             |
-| `--list`               | List visible devices then exit      | –                 | Passive scan only                |
-| `--name SUBSTR`        | Match advertising name              | `NUS_NAME`        | Case-insensitive substring       |
-| `--filter-addr SUBSTR` | Prefer address containing substring | –                 | Helps disambiguate similar names |
-| `--ts` / `--ts-local`  | Add UTC or local timestamps         | –                 | Mutually exclusive               |
-| `--raw`                | Show hex bytes before decoded line  | –                 | Two aligned columns              |
-| `--logfile PATH`       | Append decoded lines to file        | `NUS_LOGFILE`     | File is created if missing       |
-| `--timeout SECS`       | Scan / connect timeout              | `NUS_TIMEOUT`     | Applies to each attempt          |
-| `--backoff SECS`       | Initial reconnect backoff           | `NUS_BACKOFF`     | Grows up to 15s cap              |
-| `--max-retries N`      | Stop after N failed reconnects      | `NUS_MAX_RETRIES` | Omit to retry indefinitely       |
-| `--verbose`            | Dump discovered GATT structure once | –                 | For debugging / inspection       |
+| Flag                   | Description                         | Env           | Notes                            |
+| ---------------------- | ----------------------------------- | ------------- | -------------------------------- | --- | --- | --- |
+| `--wizard`             | Interactive scan & option wizard    | –             | Default when no args             |
+| `--list`               | List visible devices then exit      | –             | Passive scan only                |
+| `--name SUBSTR`        | Match advertising name              | `NUS_NAME`    | Case-insensitive substring       |
+| `--filter-addr SUBSTR` | Prefer address containing substring | –             | Helps disambiguate similar names |
+| `--ts` / `--ts-local`  | Add UTC or local timestamps         | –             | Mutually exclusive               |
+| `--raw`                | Show hex bytes before decoded line  | –             | Two aligned columns              |
+| `--logfile PATH`       | Append decoded lines to file        | `NUS_LOGFILE` | File is created if missing       |
+| `--timeout SECS`       | Scan / connect timeout              | `NUS_TIMEOUT` | Applies to each attempt          | –   | –   | –   |
+| `--verbose`            | Dump discovered GATT structure once | –             | For debugging / inspection       |
 
 <details><summary><strong>Show full help example</strong></summary>
 
@@ -144,7 +142,7 @@ To stream the Zephyr logging subsystem over BLE for `nus-logger` to consume you 
 | No devices on Windows            | Toggle Bluetooth off/on or airplane mode, verify advertising.               |
 | Linux permission errors          | Ensure user in `bluetooth` group or grant `CAP_NET_RAW` to Python binary.   |
 | macOS permission prompt          | Allow Bluetooth access in System Settings > Privacy & Security > Bluetooth. |
-| Frequent disconnects             | Reduce distance / interference; backoff resets after ~60s stable link.      |
+| Disconnects                      | Reduce distance / interference.                                             |
 | Mixed devices with similar names | Use `--filter-addr` to prefer a known address substring.                    |
 
 ## Development

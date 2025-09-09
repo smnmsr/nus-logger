@@ -8,7 +8,7 @@ import random
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator, Optional, TextIO
+from typing import Optional, TextIO
 
 
 def utc_ts() -> str:
@@ -27,18 +27,6 @@ def local_ts() -> str:
     hh = offset_s // 3600
     mm = (offset_s % 3600) // 60
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + f"{sign}{hh:02d}:{mm:02d}"
-
-
-async def exponential_backoff(initial: float, cap: float) -> AsyncIterator[float]:
-    """Yield successive backoff delays with jitter until cancelled.
-
-    Jitter: uniform(0, current/2). Delay doubles each time until `cap`.
-    """
-    delay = max(0.0, initial)
-    while True:
-        jitter = random.uniform(0, delay / 2 if delay > 0 else 0.1)
-        yield delay + jitter
-        delay = min(cap, delay * 2 if delay else initial or 0.5)
 
 
 def open_log_file(path: str | os.PathLike[str]) -> Optional[TextIO]:

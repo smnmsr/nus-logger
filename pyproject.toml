@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nus-logger"
 version = "0.1.1"
-description = "Auto-reconnecting Nordic UART Service (NUS) BLE logger."
+description = "Nordic UART Service (NUS) BLE logger."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
