@@ -19,7 +19,7 @@ from typing import AsyncIterator, Dict, List, Optional, TextIO
 from bleak.exc import BleakError
 
 from .ble_nus import NUSClient, DiscoveredDevice
-from .utils import LineAssembler, utc_ts, local_ts, exponential_backoff, open_log_file
+from .utils import LineAssembler, utc_ts, local_ts, open_log_file
 
 LOG = logging.getLogger("logger_controller")
 
@@ -29,9 +29,6 @@ class LoggerSettings:
     name: str = ""  # substring for scan + connect
     filter_addr: Optional[str] = None
     timeout: float = 5.0
-    reconnect: bool = True
-    backoff: float = 0.5  # initial
-    max_retries: int = 1_000_000_000
     ts_mode: str = "none"  # "none" | "utc" | "local"
     raw: bool = False  # include hex
     logfile: Optional[str] = None
@@ -63,7 +60,6 @@ class NUSLoggerController:
         self._connecting = False
         self._retries = 0
         self._lock = asyncio.Lock()
-        self._backoff_iter: Optional[AsyncIterator[float]] = None
         self._client.on_bytes(self._on_bytes)
 
     # ---------------------- public API ---------------------------------
@@ -99,7 +95,6 @@ class NUSLoggerController:
             self._loop_task = asyncio.create_task(self._run_loop())
 
     async def disconnect(self) -> None:
-        self._settings.reconnect = False  # disable further attempts
         self._stop_event.set()
         if self._loop_task:
             try:
@@ -196,45 +191,20 @@ class NUSLoggerController:
     async def _run_loop(self) -> None:
         await self._reopen_logfile()
         idle_task = asyncio.create_task(self._idle_flush_task())
-        self._backoff_iter = exponential_backoff(
-            initial=self._settings.backoff, cap=15.0)
-        self._retries = 0
         try:
-            while not self._stop_event.is_set():
-                self._connecting = True
-                try:
-                    self._device = await self._client.scan_and_connect(
-                        name=self._settings.name,
-                        timeout=self._settings.timeout,
-                        adapter=self._settings.adapter,
-                        preferred_addr_substring=self._settings.filter_addr,
-                    )
-                    self._connecting = False
-                    self._retries = 0
-                    # reset backoff after a successful connect
-                    self._backoff_iter = exponential_backoff(
-                        initial=self._settings.backoff, cap=15.0)
-                    # Wait until disconnect
-                    await self._client.run_until_disconnect()
-                except BleakError as e:
-                    LOG.warning("BLE error: %s", e)
-                finally:
-                    await self._client.disconnect()
-                    self._connecting = False
-                    self._device = None
-                if self._stop_event.is_set() or not self._settings.reconnect:
-                    break
-                self._retries += 1
-                if self._retries > self._settings.max_retries:
-                    LOG.warning("Max retries reached; stopping reconnect loop")
-                    break
-                assert self._backoff_iter is not None
-                delay = await self._backoff_iter.__anext__()
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
-                except asyncio.TimeoutError:
-                    continue
+            self._connecting = True
+            self._device = await self._client.scan_and_connect(
+                name=self._settings.name,
+                timeout=self._settings.timeout,
+                adapter=self._settings.adapter,
+                preferred_addr_substring=self._settings.filter_addr,
+            )
+            self._connecting = False
+            await self._client.run_until_disconnect()
+        except BleakError as e:
+            LOG.warning("BLE error: %s", e)
         finally:
+            await self._client.disconnect()
             self._connecting = False
             self._device = None
             self._stop_event.clear()

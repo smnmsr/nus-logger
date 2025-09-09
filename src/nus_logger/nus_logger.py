@@ -3,7 +3,7 @@
 Features:
 * Scans by (substring) name, selects strongest RSSI.
 * Reassembles newline-delimited log lines (flush on idle).
-* Optional timestamps, raw hex, file logging, auto-reconnect with backoff.
+* Optional timestamps, raw hex, file logging.
 * Minimal dependencies: bleak (+ colorama auto-installed on Windows for colored events, optional elsewhere).
 """
 from __future__ import annotations
@@ -14,11 +14,11 @@ import logging
 import os
 import signal
 import sys
-from typing import Optional, TextIO
+from typing import Optional, TextIO, Awaitable, TypeVar
 
 from bleak.exc import BleakError
 
-from .utils import utc_ts, local_ts, exponential_backoff, open_log_file, supports_color, LineAssembler
+from .utils import utc_ts, local_ts, open_log_file, supports_color, LineAssembler
 from .ble_nus import NUSClient, NUS_SERVICE_UUID, NUS_RX_CHAR_UUID, NUS_TX_CHAR_UUID, DiscoveredDevice
 
 
@@ -46,6 +46,9 @@ def env_default(name: str, fallback: Optional[str] = None) -> Optional[str]:
     return os.environ.get(name, fallback)
 
 
+T = TypeVar("T")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Read Nordic UART Service logs over BLE.")
@@ -65,21 +68,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Prefix lines with UTC timestamp")
     p.add_argument("--ts-local", action="store_true",
                    help="Prefix lines with local timestamp")
-    p.add_argument("--reconnect", action="store_true", default=True,
-                   help="Auto reconnect on disconnect (default true)")
-    max_retries_def = env_default(
-        "NUS_MAX_RETRIES", "1000000000") or "1000000000"
-    backoff_def = env_default("NUS_BACKOFF", "0.5") or "0.5"
-    p.add_argument("--max-retries", type=int, default=int(float(max_retries_def)),
-                   help="Max reconnect attempts (default large ~1e9)")
-    p.add_argument("--backoff", type=float, default=float(backoff_def),
-                   help="Initial reconnect backoff seconds (default 0.5)")
     p.add_argument("--verbose", action="store_true",
                    help="Verbose diagnostics")
     p.add_argument("--list", action="store_true",
                    help="List visible devices and exit")
     p.add_argument("--filter-addr",
                    help="Preferred address substring when multiple matches")
+    # Reconnection control: default on; allow --no-reconnect to disable.
+    try:  # Python 3.9+ supports BooleanOptionalAction
+        p.add_argument("--reconnect", action=argparse.BooleanOptionalAction, default=True,
+                       help="Automatically rescan & reconnect after disconnect (default: enabled)")
+    except AttributeError:  # pragma: no cover - fallback for very old Python, though unsupported
+        p.add_argument("--no-reconnect", action="store_true",
+                       help="Disable automatic reconnection attempts")
     args = p.parse_args(argv)
 
     # If user supplied no arguments at all, treat as --wizard
@@ -93,6 +94,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             args.name = env_name
     if not args.wizard and not args.name and not args.list:
         p.error("--name required unless --list or --wizard is used (or set NUS_NAME)")
+
+    # Normalize reconnect flag when fallback arg style used
+    if hasattr(args, "no_reconnect"):
+        args.reconnect = not args.no_reconnect  # type: ignore[attr-defined]
 
     if args.ts and args.ts_local:
         p.error("--ts and --ts-local are mutually exclusive")
@@ -115,10 +120,40 @@ def decode_line(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+async def _run_with_spinner(aw: Awaitable[T], message: str, interval: float = 0.15) -> T:
+    """Run an awaitable while displaying a simple spinner (TTY only).
+
+    Clears the line when done. If stdout isn't a TTY, no spinner is shown.
+    """
+    if not sys.stdout.isatty():
+        return await aw
+    spinner = "/-\\|"
+    # ensure_future accepts Awaitable and wraps appropriately
+    task: asyncio.Future[T] = asyncio.ensure_future(
+        aw)  # type: ignore[assignment]
+    i = 0
+    msg = message.rstrip()
+    try:
+        while not task.done():
+            ch = spinner[i % len(spinner)]
+            print(f"\r{msg} {ch}", end="", flush=True)
+            await asyncio.sleep(interval)
+            i += 1
+        return await task
+    finally:
+        # Clear line
+        if sys.stdout.isatty():
+            blank = " " * (len(msg) + 2)
+            print(f"\r{blank}\r", end="", flush=True)
+
+
 async def list_devices(timeout: float, adapter: Optional[str]) -> int:
     client = NUSClient()
     try:
-        devices = await client.scan(name="", timeout=timeout, adapter=adapter)
+        devices = await _run_with_spinner(
+            client.scan(name="", timeout=timeout, adapter=adapter),
+            "Scanning for devices",
+        )
     except BleakError as e:
         print(format_event(f"Scan failed: {e}", "err"), file=sys.stderr)
         return 2
@@ -277,22 +312,20 @@ async def run_logger(args: argparse.Namespace) -> int:
 
     client.on_bytes(_on_bytes)
 
-    stable_connected_since: Optional[float] = None
-    backoff_iter = exponential_backoff(initial=args.backoff, cap=15.0)
-    retries = 0
-
     idle_task = asyncio.create_task(_flush_idle())
 
-    while not stop_event.is_set():
+    # Connection loop with optional automatic re-scan & reconnect to the same device.
+    try:
         try:
-            device = await client.scan_and_connect(
-                name=args.name,
-                timeout=args.timeout,
-                adapter=args.adapter,
-                preferred_addr_substring=args.filter_addr,
+            device = await _run_with_spinner(
+                client.scan_and_connect(
+                    name=args.name,
+                    timeout=args.timeout,
+                    adapter=args.adapter,
+                    preferred_addr_substring=args.filter_addr,
+                ),
+                f"Scanning for '{args.name}'",
             )
-            stable_connected_since = loop.time()
-            retries = 0
             print(
                 format_event(
                     f"Connected to {device.name} ({device.address}) RSSI={device.rssi}dBm", "ok"
@@ -301,46 +334,70 @@ async def run_logger(args: argparse.Namespace) -> int:
             if args.verbose:
                 svcs = await client.get_services_debug()
                 print("Services:\n" + svcs)
-            await client.run_until_disconnect(stop_event)
-            print(format_event("Disconnected", "warn"))
         except BleakError as e:
-            print(format_event(f"BLE error: {e}", "err"), file=sys.stderr)
-            # Provide hints for common cases
-            msg = str(e).lower()
-            if "failed to execute management command" in msg or "not available" in msg:
-                print(
-                    "Hint: Ensure Bluetooth adapter is powered and not blocked (rfkill).", file=sys.stderr)
-            if "permission" in msg and sys.platform.startswith("linux"):
-                print(
-                    "Hint: Missing permissions. Consider adding user to 'bluetooth' group or setcap 'cap_net_raw+eip' on python.",
-                    file=sys.stderr,
-                )
-        except Exception as e:  # pragma: no cover - unexpected path
-            print(format_event(
-                f"Unexpected error: {e}", "err"), file=sys.stderr)
-        finally:
-            await client.disconnect()
-            if stop_event.is_set() or not args.reconnect:
-                break
-            # Backoff decisions
-            if stable_connected_since and (loop.time() - stable_connected_since) > 60:
-                # Reset backoff after stable period
-                backoff_iter = exponential_backoff(
-                    initial=args.backoff, cap=15.0)
-            retries += 1
-            if retries > args.max_retries:
-                print(format_event("Max retries reached, exiting.", "err"))
-                break
-            delay = await backoff_iter.__anext__()
-            print(format_event(f"Reconnecting in {delay:.2f}s...", "warn"))
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                break  # stop requested
-            except asyncio.TimeoutError:
-                continue
+            # Initial connection failure => exit (retain existing behaviour)
+            raise e
 
-    stop_event.set()
-    idle_task.cancel()
+        # Run until disconnect once (always)
+        await client.run_until_disconnect(stop_event)
+        if not args.reconnect or stop_event.is_set():
+            if not stop_event.is_set():
+                print(format_event("Disconnected", "warn"))
+            return 0
+
+        # Reconnection loop if enabled
+        while args.reconnect and not stop_event.is_set():
+            print(format_event("Disconnected", "warn"))
+            print(format_event(
+                "Waiting for device to reappear (Ctrl-C to quit)...", "warn"))
+
+            # Reconnection scan attempts until success or stop
+            while not stop_event.is_set():
+                try:
+                    next_dev = await _run_with_spinner(
+                        client.scan_and_connect(
+                            name=device.name,
+                            timeout=args.timeout,
+                            adapter=args.adapter,
+                            preferred_addr_substring=device.address,
+                        ),
+                        f"Re-scanning for '{device.name}'",
+                    )
+                    device = next_dev
+                    print(format_event(
+                        f"Reconnected to {device.name} ({device.address}) RSSI={device.rssi}dBm", "ok"))
+                    if args.verbose:
+                        svcs = await client.get_services_debug()
+                        print("Services:\n" + svcs)
+                    break
+                except BleakError:
+                    if args.verbose and not stop_event.is_set():
+                        print(format_event(
+                            "Device not yet visible; retrying...", "warn"))
+                    await asyncio.sleep(1.0)
+
+            if stop_event.is_set():
+                break
+            # After a successful reconnection, wait again for next disconnect
+            await client.run_until_disconnect(stop_event)
+    except BleakError as e:
+        print(format_event(f"BLE error: {e}", "err"), file=sys.stderr)
+        msg = str(e).lower()
+        if "failed to execute management command" in msg or "not available" in msg:
+            print(
+                "Hint: Ensure Bluetooth adapter is powered and not blocked (rfkill).", file=sys.stderr)
+        if "permission" in msg and sys.platform.startswith("linux"):
+            print(
+                "Hint: Missing permissions. Consider adding user to 'bluetooth' group or setcap 'cap_net_raw+eip' on python.",
+                file=sys.stderr,
+            )
+    except Exception as e:  # pragma: no cover - unexpected path
+        print(format_event(
+            f"Unexpected error: {e}", "err"), file=sys.stderr)
+    finally:
+        await client.disconnect()
+        stop_event.set()
+        idle_task.cancel()
     try:
         await idle_task
     except asyncio.CancelledError:  # Expected during shutdown; suppress noisy traceback
@@ -431,8 +488,6 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
     new_args.ts_local = ts_mode == 'local'
     new_args.raw = raw_hex
     new_args.logfile = logfile
-    # Force reconnect true by default
-    new_args.reconnect = True
     print(format_event(f"Selected {selected.name} ({selected.address})", "ok"))
     return new_args
 

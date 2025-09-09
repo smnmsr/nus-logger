@@ -8,7 +8,7 @@ from importlib.metadata import version, PackageNotFoundError
 
 from .ble_nus import NUSClient, DiscoveredDevice, NUS_SERVICE_UUID, NUS_RX_CHAR_UUID, NUS_TX_CHAR_UUID
 from .logger_controller import NUSLoggerController, controller, LoggerSettings, LoggerStatus
-from .utils import LineAssembler, utc_ts, local_ts, exponential_backoff, open_log_file
+from .utils import LineAssembler, utc_ts, local_ts, open_log_file
 
 try:  # pragma: no cover - metadata environment
     __version__ = version("nus-logger")
@@ -26,7 +26,6 @@ __all__ = [
     "LineAssembler",
     "utc_ts",
     "local_ts",
-    "exponential_backoff",
     "open_log_file",
     "NUS_SERVICE_UUID",
     "NUS_RX_CHAR_UUID",
