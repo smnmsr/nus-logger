@@ -73,14 +73,14 @@ class NUSClient:
     ) -> List[DiscoveredDevice]:
         """Scan for devices whose name equals or contains `name`.
 
-        Behaviour:
-        * Collect all advertising devices during the scan window (up to `timeout`).
-        * If `early_addr_substring` is provided, the scan will terminate early as soon as a
-          device matching BOTH the name filter (or no name filter) and the address substring
-          is observed. This accelerates reconnection loops where the target device is already
-          back in range and there's no need to wait the full timeout.
-        * Returns candidates sorted by strongest RSSI.
-        * If `name` is empty, all devices with a non-empty name are returned.
+                Behaviour:
+                * Collect all advertising devices during the scan window (up to `timeout`).
+                * If `early_addr_substring` is provided, the scan will terminate early as soon as a
+                    device matching BOTH the name filter (or wildcard) and the address substring
+                    is observed. This accelerates reconnection loops where the target device is already
+                    back in range and there's no need to wait the full timeout.
+                * Returns candidates sorted by strongest RSSI.
+                * If `name` is empty, all devices are considered (including those without a name).
         """
         seen: dict[str, tuple[BLEDevice, AdvertisementData]] = {}
         early_event = asyncio.Event()
@@ -117,32 +117,33 @@ class NUSClient:
         matches: List[DiscoveredDevice] = []
         for _, (dev, adv) in seen.items():
             dname = (dev.name or "").strip()
-            if not dname:
-                continue
-            if not name or lname in dname.lower():
-                # Optional filter: require that the advertisement (including scan response)
-                # lists the Nordic UART Service UUID. Some firmwares omit 128-bit UUIDs
-                # to save space; users can disable this via CLI / settings if needed.
-                if require_adv_nus:
-                    try:
-                        svc_uuids = [u.lower()
-                                     for u in (adv.service_uuids or [])]
-                    except AttributeError:  # pragma: no cover - defensive for older bleak
-                        svc_uuids = []
-                    if NUS_SERVICE_UUID.lower() not in svc_uuids:
-                        continue
-                rssi_val = adv.rssi if adv and adv.rssi is not None else -200
-                meta = {
-                    "manufacturer_data": dict(adv.manufacturer_data) if adv.manufacturer_data else {},
-                }
-                matches.append(
-                    DiscoveredDevice(
-                        address=dev.address,
-                        name=dname,
-                        rssi=rssi_val,
-                        metadata=meta,
-                    )
+            if name:  # name filter active
+                if not dname:
+                    continue  # cannot match
+                if lname not in dname.lower():
+                    continue
+            # Optional filter: require that the advertisement (including scan response)
+            # lists the Nordic UART Service UUID. Some firmwares omit 128-bit UUIDs
+            # to save space; users can disable this via CLI / settings if needed.
+            if require_adv_nus:
+                try:
+                    svc_uuids = [u.lower() for u in (adv.service_uuids or [])]
+                except AttributeError:  # pragma: no cover - defensive for older bleak
+                    svc_uuids = []
+                if NUS_SERVICE_UUID.lower() not in svc_uuids:
+                    continue
+            rssi_val = adv.rssi if adv and adv.rssi is not None else -200
+            meta = {
+                "manufacturer_data": dict(adv.manufacturer_data) if adv.manufacturer_data else {},
+            }
+            matches.append(
+                DiscoveredDevice(
+                    address=dev.address,
+                    name=dname,  # may be empty
+                    rssi=rssi_val,
+                    metadata=meta,
                 )
+            )
         matches.sort(key=lambda x: x.rssi, reverse=True)
         return matches
 

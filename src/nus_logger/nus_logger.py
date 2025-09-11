@@ -99,8 +99,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         env_name = env_default("NUS_NAME")
         if env_name:
             args.name = env_name
-    if not args.wizard and not args.name and not args.list:
-        p.error("--name required unless --list or --wizard is used (or set NUS_NAME)")
+    # Allow omission of --name: treat as wildcard (scan all NUS devices)
+    if not args.name:
+        args.name = ""
 
     # Normalize reconnect flag when fallback arg style used
     if hasattr(args, "no_reconnect"):
@@ -328,6 +329,7 @@ async def run_logger(args: argparse.Namespace) -> int:
     try:
         try:
             # Perform scan separately so we can emit warning if multiple devices match
+            scan_label = f"Scanning for '{args.name}'" if args.name else "Scanning for NUS devices"
             devices = await _run_with_spinner(
                 client.scan(
                     name=args.name,
@@ -336,12 +338,16 @@ async def run_logger(args: argparse.Namespace) -> int:
                     early_addr_substring=None,  # Initial scan: no early exit
                     require_adv_nus=args.adv_filter,
                 ),
-                f"Scanning for '{args.name}'",
+                scan_label,
             )
             if not devices:
                 hint = " (try --no-adv-filter)" if args.adv_filter else ""
-                raise BleakError(
-                    f"No device found matching name substring '{args.name}'{hint}.")
+                if args.name:
+                    raise BleakError(
+                        f"No device found matching name substring '{args.name}'{hint}.")
+                else:
+                    raise BleakError(
+                        f"No advertising NUS devices found{hint}.")
             # Apply preferred address substring filtering like scan_and_connect
             if args.filter_addr:
                 filt = [d for d in devices if args.filter_addr.lower()
@@ -350,9 +356,10 @@ async def run_logger(args: argparse.Namespace) -> int:
                     devices = filt
             # Warn if multiple candidates
             if len(devices) > 1:
+                match_desc = f"('{args.name}')" if args.name else "(any)"
                 # Show summary list (limit maybe to 8 for brevity?)
                 print(format_event(
-                    f"Multiple devices matched ('{args.name}') - selecting strongest RSSI (override with --filter-addr).", "warn"))
+                    f"Multiple devices matched {match_desc} - selecting strongest RSSI (override with --filter-addr).", "warn"))
                 for d in devices[:8]:
                     print(format_event(
                         f"  Candidate: {d.name} | {d.address} | RSSI {d.rssi} dBm", "warn"))
@@ -472,14 +479,14 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
         if not devices:
             if adv_filter:
                 print(
-                    "No named devices with advertised NUS UUID found. (Your device may omit the UUID.)")
+                    "No devices advertising NUS UUID found. (Your device may omit the UUID.)")
                 choice = input(
                     "(R)escan, disable fi(L)ter then rescan, or (Q)uit? [R/l/q]: ").strip().lower()
                 if choice == 'l':
                     adv_filter = False
                     continue
             else:
-                print("No named devices found.")
+                print("No devices found.")
                 choice = input("(R)escan or (Q)uit? [R/q]: ").strip().lower()
             if choice == "q":
                 return None
@@ -488,7 +495,8 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
         # Display table
         print("\nDiscovered devices:")
         for idx, d in enumerate(devices):
-            print(f"  [{idx}] {d.name} | {d.address} | RSSI {d.rssi} dBm")
+            disp_name = d.name if d.name else "<unnamed>"
+            print(f"  [{idx}] {disp_name} | {d.address} | RSSI {d.rssi} dBm")
         resp = input(
             "Select device index, or 'r' to rescan, 'q' to quit: ").strip().lower()
         if resp == 'q':
@@ -531,7 +539,8 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
     new_args.raw = raw_hex
     new_args.adv_filter = adv_filter
     new_args.logfile = logfile
-    print(format_event(f"Selected {selected.name} ({selected.address})", "ok"))
+    disp_sel = selected.name if selected.name else "<unnamed>"
+    print(format_event(f"Selected {disp_sel} ({selected.address})", "ok"))
     return new_args
 
 
