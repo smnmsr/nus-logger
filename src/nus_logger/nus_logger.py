@@ -317,25 +317,43 @@ async def run_logger(args: argparse.Namespace) -> int:
     # Connection loop with optional automatic re-scan & reconnect to the same device.
     try:
         try:
-            device = await _run_with_spinner(
-                client.scan_and_connect(
+            # Perform scan separately so we can emit warning if multiple devices match
+            devices = await _run_with_spinner(
+                client.scan(
                     name=args.name,
                     timeout=args.timeout,
                     adapter=args.adapter,
-                    preferred_addr_substring=args.filter_addr,
                 ),
                 f"Scanning for '{args.name}'",
             )
-            print(
-                format_event(
-                    f"Connected to {device.name} ({device.address}) RSSI={device.rssi}dBm", "ok"
-                )
-            )
+            if not devices:
+                raise BleakError(
+                    f"No device found matching name substring '{args.name}'.")
+            # Apply preferred address substring filtering like scan_and_connect
+            if args.filter_addr:
+                filt = [d for d in devices if args.filter_addr.lower()
+                        in d.address.lower()]
+                if filt:
+                    devices = filt
+            # Warn if multiple candidates
+            if len(devices) > 1:
+                # Show summary list (limit maybe to 8 for brevity?)
+                print(format_event(
+                    f"Multiple devices matched ('{args.name}') - selecting strongest RSSI (override with --filter-addr).", "warn"))
+                for d in devices[:8]:
+                    print(format_event(
+                        f"  Candidate: {d.name} | {d.address} | RSSI {d.rssi} dBm", "warn"))
+                if len(devices) > 8:
+                    print(format_event(
+                        f"  ... {len(devices)-8} more hidden", "warn"))
+            device = devices[0]
+            await client.connect_discovered(device)
+            print(format_event(
+                f"Connected to {device.name} ({device.address}) RSSI={device.rssi}dBm", "ok"))
             if args.verbose:
                 svcs = await client.get_services_debug()
                 print("Services:\n" + svcs)
         except BleakError as e:
-            # Initial connection failure => exit (retain existing behaviour)
             raise e
 
         # Run until disconnect once (always)

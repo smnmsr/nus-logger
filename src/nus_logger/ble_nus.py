@@ -135,25 +135,31 @@ class NUSClient:
         self._log.debug(
             "Selected device %s (%s) RSSI=%s dBm", target.name, target.address, target.rssi
         )
+        await self.connect_discovered(target)
+        return target
 
+    # ------------------------------------------------------------------
+    async def connect_discovered(self, device: DiscoveredDevice) -> None:
+        """Connect to a previously discovered `DiscoveredDevice`.
+
+        This is factored out so callers can perform a scan separately (e.g. to
+        implement custom selection warnings) before connecting.
+        """
         def _handle_disconnect(_: BleakClient):  # pragma: no cover - runtime path
             # Bleak expects a sync callback; keep minimal work here.
             self._log.debug("Device disconnected callback fired")
             self._connected_event.clear()
 
-        # Pass disconnect callback directly (deprecated set_disconnected_callback removed in future bleak)
         client = BleakClient(
-            target.address, disconnected_callback=_handle_disconnect)
+            device.address, disconnected_callback=_handle_disconnect)
 
         try:
             await client.connect()
         except BleakError:
             raise
 
-        # Discover NUS service (prefer property, fallback if not yet populated)
         svcs = getattr(client, "services", None)
         if not svcs:  # pragma: no cover - depends on bleak version
-            # Older bleak still exposes get_services during transition
             try:  # type: ignore[attr-defined]
                 # type: ignore[attr-defined]
                 svcs = await client.get_services()
@@ -173,12 +179,10 @@ class NUSClient:
         self._tx_char = tx.uuid
         self._rx_char = rx.uuid
 
-        # Subscribe to notifications
         assert self._tx_char is not None
         # type: ignore[arg-type]
         await client.start_notify(self._tx_char, self._notification_handler)
         self._connected_event.set()
-        return target
 
     # ------------------------------------------------------------------
     # type: ignore[override]
