@@ -63,45 +63,87 @@ class NUSClient:
         self._notify_cb = callback
 
     # ------------------------------------------------------------------
-    async def scan(self, name: str, timeout: float, adapter: Optional[str] = None) -> List[DiscoveredDevice]:
+    async def scan(
+        self,
+        name: str,
+        timeout: float,
+        adapter: Optional[str] = None,
+        early_addr_substring: Optional[str] = None,
+        require_adv_nus: bool = True,
+    ) -> List[DiscoveredDevice]:
         """Scan for devices whose name equals or contains `name`.
 
-        Uses a detection callback to access `AdvertisementData.rssi` (avoiding deprecated
-        BLEDevice.rssi) and returns candidates sorted by strongest RSSI.
-        If `name` is empty, all devices with a non-empty name are returned.
+                Behaviour:
+                * Collect all advertising devices during the scan window (up to `timeout`).
+                * If `early_addr_substring` is provided, the scan will terminate early as soon as a
+                    device matching BOTH the name filter (or wildcard) and the address substring
+                    is observed. This accelerates reconnection loops where the target device is already
+                    back in range and there's no need to wait the full timeout.
+                * Returns candidates sorted by strongest RSSI.
+                * If `name` is empty, all devices are considered (including those without a name).
         """
         seen: dict[str, tuple[BLEDevice, AdvertisementData]] = {}
+        early_event = asyncio.Event()
+        lname = name.lower()
+        early_sub = early_addr_substring.lower() if early_addr_substring else None
 
-        def _detection(device: BLEDevice, adv: AdvertisementData):  # pragma: no cover - BLE runtime
-            if device and device.address:
-                seen[device.address] = (device, adv)
+        def _detection(device: BLEDevice, adv: AdvertisementData):  # pragma: no cover - BLE runtime path
+            if not device or not device.address:
+                return
+            seen[device.address] = (device, adv)
+            if early_sub:
+                dname = (device.name or "").strip()
+                # Name must match (unless no name filter supplied) AND address substring matches
+                if ((not name) or (dname and lname in dname.lower())) and early_sub in device.address.lower():
+                    # Signal early exit; the loop below will stop scanner promptly.
+                    if not early_event.is_set():
+                        early_event.set()
 
         scanner = BleakScanner(detection_callback=_detection, adapter=adapter)
         await scanner.start()
         try:
-            await asyncio.sleep(timeout)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            # Poll until timeout or early match
+            while loop.time() < deadline:
+                if early_event.is_set():
+                    self._log.debug(
+                        "Early scan stop triggered by preferred address match '%s'", early_addr_substring)
+                    break
+                await asyncio.sleep(0.1)
         finally:
             await scanner.stop()
 
         matches: List[DiscoveredDevice] = []
-        lname = name.lower()
         for _, (dev, adv) in seen.items():
             dname = (dev.name or "").strip()
-            if not dname:
-                continue
-            if not name or lname in dname.lower():
-                rssi_val = adv.rssi if adv and adv.rssi is not None else -200
-                # Minimal metadata (avoid deprecated BLEDevice.metadata)
-                meta = {"manufacturer_data": dict(
-                    adv.manufacturer_data) if adv.manufacturer_data else {}}
-                matches.append(
-                    DiscoveredDevice(
-                        address=dev.address,
-                        name=dname,
-                        rssi=rssi_val,
-                        metadata=meta,
-                    )
+            if name:  # name filter active
+                if not dname:
+                    continue  # cannot match
+                if lname not in dname.lower():
+                    continue
+            # Optional filter: require that the advertisement (including scan response)
+            # lists the Nordic UART Service UUID. Some firmwares omit 128-bit UUIDs
+            # to save space; users can disable this via CLI / settings if needed.
+            if require_adv_nus:
+                try:
+                    svc_uuids = [u.lower() for u in (adv.service_uuids or [])]
+                except AttributeError:  # pragma: no cover - defensive for older bleak
+                    svc_uuids = []
+                if NUS_SERVICE_UUID.lower() not in svc_uuids:
+                    continue
+            rssi_val = adv.rssi if adv and adv.rssi is not None else -200
+            meta = {
+                "manufacturer_data": dict(adv.manufacturer_data) if adv.manufacturer_data else {},
+            }
+            matches.append(
+                DiscoveredDevice(
+                    address=dev.address,
+                    name=dname,  # may be empty
+                    rssi=rssi_val,
+                    metadata=meta,
                 )
+            )
         matches.sort(key=lambda x: x.rssi, reverse=True)
         return matches
 
@@ -112,6 +154,7 @@ class NUSClient:
         timeout: float,
         adapter: Optional[str] = None,
         preferred_addr_substring: Optional[str] = None,
+        require_adv_nus: bool = True,
     ) -> DiscoveredDevice:
         """Scan and connect to the best matching device.
 
@@ -120,7 +163,13 @@ class NUSClient:
         * If multiple and `preferred_addr_substring` matches, prefer those.
         * Then pick highest RSSI.
         """
-        candidates = await self.scan(name=name, timeout=timeout, adapter=adapter)
+        candidates = await self.scan(
+            name=name,
+            timeout=timeout,
+            adapter=adapter,
+            early_addr_substring=preferred_addr_substring,
+            require_adv_nus=require_adv_nus,
+        )
         if not candidates:
             raise BleakError(
                 f"No device found matching name substring '{name}'.")
@@ -135,25 +184,31 @@ class NUSClient:
         self._log.debug(
             "Selected device %s (%s) RSSI=%s dBm", target.name, target.address, target.rssi
         )
+        await self.connect_discovered(target)
+        return target
 
+    # ------------------------------------------------------------------
+    async def connect_discovered(self, device: DiscoveredDevice) -> None:
+        """Connect to a previously discovered `DiscoveredDevice`.
+
+        This is factored out so callers can perform a scan separately (e.g. to
+        implement custom selection warnings) before connecting.
+        """
         def _handle_disconnect(_: BleakClient):  # pragma: no cover - runtime path
             # Bleak expects a sync callback; keep minimal work here.
             self._log.debug("Device disconnected callback fired")
             self._connected_event.clear()
 
-        # Pass disconnect callback directly (deprecated set_disconnected_callback removed in future bleak)
         client = BleakClient(
-            target.address, disconnected_callback=_handle_disconnect)
+            device.address, disconnected_callback=_handle_disconnect)
 
         try:
             await client.connect()
         except BleakError:
             raise
 
-        # Discover NUS service (prefer property, fallback if not yet populated)
         svcs = getattr(client, "services", None)
         if not svcs:  # pragma: no cover - depends on bleak version
-            # Older bleak still exposes get_services during transition
             try:  # type: ignore[attr-defined]
                 # type: ignore[attr-defined]
                 svcs = await client.get_services()
@@ -173,12 +228,10 @@ class NUSClient:
         self._tx_char = tx.uuid
         self._rx_char = rx.uuid
 
-        # Subscribe to notifications
         assert self._tx_char is not None
         # type: ignore[arg-type]
         await client.start_notify(self._tx_char, self._notification_handler)
         self._connected_event.set()
-        return target
 
     # ------------------------------------------------------------------
     # type: ignore[override]
