@@ -71,19 +71,20 @@ Press Ctrl-C to stop. By default the tool will auto‑reconnect after an unexpec
 
 Environment variables override flags when corresponding flags are omitted.
 
-| Flag                          | Description                                                          |
-| ----------------------------- | -------------------------------------------------------------------- |
-| `-h, --help`                  | Show CLI help                                                        |
-| `--wizard`                    | Interactive scan & option wizard (default when no args)              |
-| `--list`                      | List visible devices then exit                                       |
-| `--name SUBSTR`               | Match advertising name                                               |
-| `--filter-addr SUBSTR`        | Prefer address containing substring                                  |
-| `--ts` / `--ts-local`         | Add UTC or local timestamps (mutually exclusive)                     |
-| `--raw`                       | Show hex bytes                                                       |
-| `--logfile PATH`              | Append decoded lines to file (relative or absolute path)             |
-| `--timeout SECS`              | Scan / connect timeout                                               |
-| `--verbose`                   | Dump discovered GATT structure once                                  |
-| `--reconnect, --no-reconnect` | Automatically rescan & reconnect after disconnect (default: enabled) |
+| Flag                             | Description                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `-h, --help`                     | Show CLI help                                                                                           |
+| `--wizard`                       | Interactive scan & option wizard (default when no args)                                                 |
+| `--list`                         | List visible devices then exit                                                                          |
+| `--name SUBSTR`                  | Match advertising name                                                                                  |
+| `--filter-addr SUBSTR`           | Prefer address containing substring                                                                     |
+| `--adv-filter / --no-adv-filter` | Require (default) or disable requiring that the NUS 128-bit UUID appears in advertisement/scan response |
+| `--ts` / `--ts-local`            | Add UTC or local timestamps (mutually exclusive)                                                        |
+| `--raw`                          | Show hex bytes                                                                                          |
+| `--logfile PATH`                 | Append decoded lines to file (relative or absolute path)                                                |
+| `--timeout SECS`                 | Scan / connect timeout                                                                                  |
+| `--verbose`                      | Dump discovered GATT structure once                                                                     |
+| `--reconnect, --no-reconnect`    | Automatically rescan & reconnect after disconnect (default: enabled)                                    |
 
 </details>
 
@@ -95,13 +96,26 @@ To stream the Zephyr logging subsystem over BLE for `nus-logger` to consume you 
 
 ## Troubleshooting
 
-| Situation                        | Hint                                                                        |
-| -------------------------------- | --------------------------------------------------------------------------- |
-| No devices on Windows            | Toggle Bluetooth off/on or airplane mode, verify advertising.               |
-| Linux permission errors          | Ensure user in `bluetooth` group or grant `CAP_NET_RAW` to Python binary.   |
-| macOS permission prompt          | Allow Bluetooth access in System Settings > Privacy & Security > Bluetooth. |
-| Disconnects                      | Reduce distance / interference.                                             |
-| Mixed devices with similar names | Use `--filter-addr` to prefer a known address substring.                    |
+| Situation                           | Hint                                                                                     |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| No devices on Windows               | Toggle Bluetooth off/on or airplane mode, verify advertising.                            |
+| Linux permission errors             | Ensure user in `bluetooth` group or grant `CAP_NET_RAW` to Python binary.                |
+| macOS permission prompt             | Allow Bluetooth access in System Settings > Privacy & Security > Bluetooth.              |
+| Disconnects                         | Reduce distance / interference.                                                          |
+| Mixed devices with similar names    | Use `--filter-addr` to prefer a known address substring.                                 |
+| Device not found but is advertising | Your firmware may omit the NUS UUID from advertising data. Retry with `--no-adv-filter`. |
+
+### Advertisement / Scan Response Filtering
+
+By default `nus-logger` filters discovered devices to only those whose advertising data (including scan responses) lists the Nordic UART Service UUID (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`). This reduces false positives when multiple similarly named devices are present.
+
+Some firmware builds intentionally omit 128‑bit service UUIDs to save advertising space. If your device is not being found, disable this filter:
+
+```bash
+nus-logger --name my-device --no-adv-filter
+```
+
+Platform note: Bleak typically performs active scanning (requesting scan responses). On platforms/backends where only passive advertising data is available, the UUID may also be missing—disabling the filter provides a fallback.
 
 ## Development
 

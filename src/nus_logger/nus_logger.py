@@ -74,6 +74,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="List visible devices and exit")
     p.add_argument("--filter-addr",
                    help="Preferred address substring when multiple matches")
+    # Advertisement service filtering (default on)
+    try:
+        p.add_argument("--adv-filter", action=argparse.BooleanOptionalAction, default=True,
+                       help="Require advertised NUS service UUID (default: enabled). Disable if your device omits 128-bit UUIDs from adverts.")
+    except AttributeError:  # pragma: no cover - very old Python fallback
+        p.add_argument("--no-adv-filter", action="store_true",
+                       help="Disable requiring advertised NUS service UUID")
     # Reconnection control: default on; allow --no-reconnect to disable.
     try:  # Python 3.9+ supports BooleanOptionalAction
         p.add_argument("--reconnect", action=argparse.BooleanOptionalAction, default=True,
@@ -98,6 +105,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # Normalize reconnect flag when fallback arg style used
     if hasattr(args, "no_reconnect"):
         args.reconnect = not args.no_reconnect  # type: ignore[attr-defined]
+    if hasattr(args, "no_adv_filter"):
+        args.adv_filter = not args.no_adv_filter  # type: ignore[attr-defined]
 
     if args.ts and args.ts_local:
         p.error("--ts and --ts-local are mutually exclusive")
@@ -151,7 +160,8 @@ async def list_devices(timeout: float, adapter: Optional[str]) -> int:
     client = NUSClient()
     try:
         devices = await _run_with_spinner(
-            client.scan(name="", timeout=timeout, adapter=adapter),
+            client.scan(name="", timeout=timeout, adapter=adapter,
+                        early_addr_substring=None, require_adv_nus=True),
             "Scanning for devices",
         )
     except BleakError as e:
@@ -159,7 +169,7 @@ async def list_devices(timeout: float, adapter: Optional[str]) -> int:
         return 2
     seen = set()
     if not devices:
-        print("No devices with names discovered.")
+        print("No devices with names discovered (with NUS UUID advertised). Try --no-adv-filter if your firmware omits service UUIDs.")
         return 0
     print("Discovered devices (name | address | RSSI dBm):")
     for d in devices:
@@ -324,12 +334,14 @@ async def run_logger(args: argparse.Namespace) -> int:
                     timeout=args.timeout,
                     adapter=args.adapter,
                     early_addr_substring=None,  # Initial scan: no early exit
+                    require_adv_nus=args.adv_filter,
                 ),
                 f"Scanning for '{args.name}'",
             )
             if not devices:
+                hint = " (try --no-adv-filter)" if args.adv_filter else ""
                 raise BleakError(
-                    f"No device found matching name substring '{args.name}'.")
+                    f"No device found matching name substring '{args.name}'{hint}.")
             # Apply preferred address substring filtering like scan_and_connect
             if args.filter_addr:
                 filt = [d for d in devices if args.filter_addr.lower()
@@ -379,6 +391,7 @@ async def run_logger(args: argparse.Namespace) -> int:
                             timeout=args.timeout,
                             adapter=args.adapter,
                             preferred_addr_substring=device.address,
+                            require_adv_nus=args.adv_filter,
                         ),
                         f"Re-scanning for '{device.name}'",
                     )
@@ -446,9 +459,10 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
     client = NUSClient()
 
     selected: Optional[DiscoveredDevice] = None
+    adv_filter = getattr(base_args, "adv_filter", True)
     while selected is None:
         try:
-            devices = await client.scan(name="", timeout=base_args.timeout, adapter=base_args.adapter)
+            devices = await client.scan(name="", timeout=base_args.timeout, adapter=base_args.adapter, early_addr_substring=None, require_adv_nus=adv_filter)
         except BleakError as e:
             print(format_event(f"Scan failed: {e}", "err"), file=sys.stderr)
             choice = input("Retry scan? [Y/n]: ").strip().lower()
@@ -456,8 +470,17 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
                 return None
             continue
         if not devices:
-            print("No named devices found.")
-            choice = input("(R)escan or (Q)uit? [R/q]: ").strip().lower()
+            if adv_filter:
+                print(
+                    "No named devices with advertised NUS UUID found. (Your device may omit the UUID.)")
+                choice = input(
+                    "(R)escan, disable fi(L)ter then rescan, or (Q)uit? [R/l/q]: ").strip().lower()
+                if choice == 'l':
+                    adv_filter = False
+                    continue
+            else:
+                print("No named devices found.")
+                choice = input("(R)escan or (Q)uit? [R/q]: ").strip().lower()
             if choice == "q":
                 return None
             else:
@@ -506,6 +529,7 @@ async def wizard_flow(base_args: argparse.Namespace) -> Optional[argparse.Namesp
     new_args.ts = ts_mode == 'utc'
     new_args.ts_local = ts_mode == 'local'
     new_args.raw = raw_hex
+    new_args.adv_filter = adv_filter
     new_args.logfile = logfile
     print(format_event(f"Selected {selected.name} ({selected.address})", "ok"))
     return new_args

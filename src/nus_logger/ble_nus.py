@@ -69,6 +69,7 @@ class NUSClient:
         timeout: float,
         adapter: Optional[str] = None,
         early_addr_substring: Optional[str] = None,
+        require_adv_nus: bool = True,
     ) -> List[DiscoveredDevice]:
         """Scan for devices whose name equals or contains `name`.
 
@@ -119,9 +120,21 @@ class NUSClient:
             if not dname:
                 continue
             if not name or lname in dname.lower():
+                # Optional filter: require that the advertisement (including scan response)
+                # lists the Nordic UART Service UUID. Some firmwares omit 128-bit UUIDs
+                # to save space; users can disable this via CLI / settings if needed.
+                if require_adv_nus:
+                    try:
+                        svc_uuids = [u.lower()
+                                     for u in (adv.service_uuids or [])]
+                    except AttributeError:  # pragma: no cover - defensive for older bleak
+                        svc_uuids = []
+                    if NUS_SERVICE_UUID.lower() not in svc_uuids:
+                        continue
                 rssi_val = adv.rssi if adv and adv.rssi is not None else -200
-                meta = {"manufacturer_data": dict(
-                    adv.manufacturer_data) if adv.manufacturer_data else {}}
+                meta = {
+                    "manufacturer_data": dict(adv.manufacturer_data) if adv.manufacturer_data else {},
+                }
                 matches.append(
                     DiscoveredDevice(
                         address=dev.address,
@@ -140,6 +153,7 @@ class NUSClient:
         timeout: float,
         adapter: Optional[str] = None,
         preferred_addr_substring: Optional[str] = None,
+        require_adv_nus: bool = True,
     ) -> DiscoveredDevice:
         """Scan and connect to the best matching device.
 
@@ -153,6 +167,7 @@ class NUSClient:
             timeout=timeout,
             adapter=adapter,
             early_addr_substring=preferred_addr_substring,
+            require_adv_nus=require_adv_nus,
         )
         if not candidates:
             raise BleakError(

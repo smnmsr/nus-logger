@@ -33,6 +33,7 @@ class LoggerSettings:
     raw: bool = False  # include hex
     logfile: Optional[str] = None
     adapter: Optional[str] = None  # platform specific (Linux hciX)
+    require_adv_nus: bool = True  # filter by advertised NUS UUID
 
 
 @dataclass
@@ -79,7 +80,13 @@ class NUSLoggerController:
     async def scan(self, name: str = "", timeout: Optional[float] = None) -> List[DiscoveredDevice]:
         timeout = timeout if timeout is not None else self._settings.timeout
         # No early stop outside reconnect context here
-        return await self._client.scan(name=name, timeout=timeout, adapter=self._settings.adapter)
+        return await self._client.scan(
+            name=name,
+            timeout=timeout,
+            adapter=self._settings.adapter,
+            early_addr_substring=None,
+            require_adv_nus=self._settings.require_adv_nus,
+        )
 
     async def connect(self, name: Optional[str] = None, filter_addr: Optional[str] = None) -> None:
         if name is not None:
@@ -199,6 +206,7 @@ class NUSLoggerController:
                 timeout=self._settings.timeout,
                 adapter=self._settings.adapter,
                 preferred_addr_substring=self._settings.filter_addr,
+                require_adv_nus=self._settings.require_adv_nus,
             )
             self._connecting = False
             await self._client.run_until_disconnect()
