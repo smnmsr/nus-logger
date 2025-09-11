@@ -323,6 +323,7 @@ async def run_logger(args: argparse.Namespace) -> int:
                     name=args.name,
                     timeout=args.timeout,
                     adapter=args.adapter,
+                    early_addr_substring=None,  # Initial scan: no early exit
                 ),
                 f"Scanning for '{args.name}'",
             )

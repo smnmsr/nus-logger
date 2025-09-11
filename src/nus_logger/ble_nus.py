@@ -63,35 +63,63 @@ class NUSClient:
         self._notify_cb = callback
 
     # ------------------------------------------------------------------
-    async def scan(self, name: str, timeout: float, adapter: Optional[str] = None) -> List[DiscoveredDevice]:
+    async def scan(
+        self,
+        name: str,
+        timeout: float,
+        adapter: Optional[str] = None,
+        early_addr_substring: Optional[str] = None,
+    ) -> List[DiscoveredDevice]:
         """Scan for devices whose name equals or contains `name`.
 
-        Uses a detection callback to access `AdvertisementData.rssi` (avoiding deprecated
-        BLEDevice.rssi) and returns candidates sorted by strongest RSSI.
-        If `name` is empty, all devices with a non-empty name are returned.
+        Behaviour:
+        * Collect all advertising devices during the scan window (up to `timeout`).
+        * If `early_addr_substring` is provided, the scan will terminate early as soon as a
+          device matching BOTH the name filter (or no name filter) and the address substring
+          is observed. This accelerates reconnection loops where the target device is already
+          back in range and there's no need to wait the full timeout.
+        * Returns candidates sorted by strongest RSSI.
+        * If `name` is empty, all devices with a non-empty name are returned.
         """
         seen: dict[str, tuple[BLEDevice, AdvertisementData]] = {}
+        early_event = asyncio.Event()
+        lname = name.lower()
+        early_sub = early_addr_substring.lower() if early_addr_substring else None
 
-        def _detection(device: BLEDevice, adv: AdvertisementData):  # pragma: no cover - BLE runtime
-            if device and device.address:
-                seen[device.address] = (device, adv)
+        def _detection(device: BLEDevice, adv: AdvertisementData):  # pragma: no cover - BLE runtime path
+            if not device or not device.address:
+                return
+            seen[device.address] = (device, adv)
+            if early_sub:
+                dname = (device.name or "").strip()
+                # Name must match (unless no name filter supplied) AND address substring matches
+                if ((not name) or (dname and lname in dname.lower())) and early_sub in device.address.lower():
+                    # Signal early exit; the loop below will stop scanner promptly.
+                    if not early_event.is_set():
+                        early_event.set()
 
         scanner = BleakScanner(detection_callback=_detection, adapter=adapter)
         await scanner.start()
         try:
-            await asyncio.sleep(timeout)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            # Poll until timeout or early match
+            while loop.time() < deadline:
+                if early_event.is_set():
+                    self._log.debug(
+                        "Early scan stop triggered by preferred address match '%s'", early_addr_substring)
+                    break
+                await asyncio.sleep(0.1)
         finally:
             await scanner.stop()
 
         matches: List[DiscoveredDevice] = []
-        lname = name.lower()
         for _, (dev, adv) in seen.items():
             dname = (dev.name or "").strip()
             if not dname:
                 continue
             if not name or lname in dname.lower():
                 rssi_val = adv.rssi if adv and adv.rssi is not None else -200
-                # Minimal metadata (avoid deprecated BLEDevice.metadata)
                 meta = {"manufacturer_data": dict(
                     adv.manufacturer_data) if adv.manufacturer_data else {}}
                 matches.append(
@@ -120,7 +148,12 @@ class NUSClient:
         * If multiple and `preferred_addr_substring` matches, prefer those.
         * Then pick highest RSSI.
         """
-        candidates = await self.scan(name=name, timeout=timeout, adapter=adapter)
+        candidates = await self.scan(
+            name=name,
+            timeout=timeout,
+            adapter=adapter,
+            early_addr_substring=preferred_addr_substring,
+        )
         if not candidates:
             raise BleakError(
                 f"No device found matching name substring '{name}'.")

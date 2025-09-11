@@ -78,6 +78,7 @@ class NUSLoggerController:
 
     async def scan(self, name: str = "", timeout: Optional[float] = None) -> List[DiscoveredDevice]:
         timeout = timeout if timeout is not None else self._settings.timeout
+        # No early stop outside reconnect context here
         return await self._client.scan(name=name, timeout=timeout, adapter=self._settings.adapter)
 
     async def connect(self, name: Optional[str] = None, filter_addr: Optional[str] = None) -> None:
